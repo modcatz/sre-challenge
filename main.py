@@ -30,14 +30,11 @@ def update_item(item_id: int, item: Item):
 
 @app.get("/data")
 def data():
-    db_password = os.getenv("DB_PASSWORD")
-
     api_base_url = os.getenv("API_BASE_URL")
     log_level = os.getenv("LOG_LEVEL")
     max_connections = os.getenv("MAX_CONNECTIONS")
 
     return {
-        "DB_PASSWORD": db_password,
         "API_BASE_URL": api_base_url,
         "LOG_LEVEL": log_level,
         "MAX_CONNECTIONS": max_connections,
