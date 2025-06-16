@@ -129,7 +129,7 @@ The CI/CD pipeline includes automated verification:
 
 ## Tradeoffs
 
-I had very limited time and in production environment I would add at least features:
+I had very limited time and in production environment I would add at least these features:
 
 ### Infrastructure Improvements
 - OIDC GitHub Cloud Provider Authentication
