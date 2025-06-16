@@ -6,7 +6,6 @@ This document provides comprehensive instructions for running, deploying, and ve
 
 1. [How to Run the Code Locally](#how-to-run-the-code-locally)
 2. [Pipeline Workflow](#pipeline-workflow)
-   - [Environment Configuration](#environment-configuration)
 3. [How to Verify the Application is Running](#how-to-verify-the-application-is-running)
 4. [Security Considerations](#security-considerations)
 5. [Security Changes to Code](#security-changes-to-code)
@@ -133,17 +132,23 @@ The CI/CD pipeline includes automated verification:
 I had very limited time and in production environment I would add at least features:
 
 ### Infrastructure Improvements
-- **OIDC GitHub Cloud Provider Authentication**
-- **Secret management with rotation**
-- **Terraform S3 State + State Lock in DynamoDB**
+- OIDC GitHub Cloud Provider Authentication
+- Secret management with rotation
+- Terraform S3 State + State Lock in DynamoDB
+- Observability platform
 
 ### Kubernetes Enhancements
-- **TLS for Ingress**
-- **Resources Specified (CPU/Memory limits)**
-- **Horizontal Pod Autoscaler (HPA)**
-- **Secrets Properly Mounted from Secret Management System**
-- **Readiness Probe/Liveness Probe**
-- **Network Policies**
+- TLS for Ingress
+- Resources Specified (CPU/Memory limits)
+- Horizontal Pod Autoscaler (HPA)
+- Secrets Properly Mounted from Secret Management System
+- Readiness Probe/Liveness Probe
+- Network Policies
+
+### Code improvements
+- Logging
+- Metrics
+
 
 ### LLMs note
 
