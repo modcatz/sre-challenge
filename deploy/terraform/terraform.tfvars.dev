@@ -1,0 +1,7 @@
+# Development environment configuration
+release_name    = "sre-challenge-dev"
+namespace       = "development"
+replica_count   = 1
+image_tag       = "develop"
+ingress_host    = "sre-challenge-dev.local"
+environment     = "development" 

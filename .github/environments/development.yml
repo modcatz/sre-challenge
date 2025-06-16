@@ -1,0 +1,15 @@
+name: development
+on:
+  workflow_run:
+    workflows: ["CI/CD Pipeline"]
+    types: [completed]
+
+protection_rules:
+  required_reviewers:
+    count: 1
+    users: []
+    teams: []
+  wait_timer: 0
+  deployment_branch_policy:
+    protected_branches: false
+    custom_branch_policies: true 

@@ -1,0 +1,7 @@
+# Production environment configuration
+release_name    = "sre-challenge-prod"
+namespace       = "production"
+replica_count   = 3
+image_tag       = "latest"
+ingress_host    = "sre-challenge.example.com"
+environment     = "production" 

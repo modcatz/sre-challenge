@@ -1,0 +1,16 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/your-org/sre-challenge
+  tag: "latest"
+
+service:
+  port: 80
+
+ingress:
+  enabled: true
+  host: "sre-challenge.local"
+
+env:
+  ENVIRONMENT: "production"
+  DB_PASSWORD: "placeholder" 

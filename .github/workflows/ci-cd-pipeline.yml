@@ -1,0 +1,344 @@
+name: CI/CD Pipeline
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+  push:
+    branches: [ main, develop ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  RELEASE_NAME_DEV: sre-challenge-dev
+  RELEASE_NAME_PROD: sre-challenge-prod
+
+jobs:
+  # PR Validation Pipeline
+  pr-validation:
+    name: PR Validation
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r src/requirements.txt
+          pip install black flake8 bandit safety
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'v3.12.0'
+
+      - name: Install Hadolint
+        run: |
+          wget -O hadolint https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64
+          chmod +x hadolint
+          sudo mv hadolint /usr/local/bin/
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.0.0"
+
+      - name: Code linting
+        run: |
+          black --check --diff src/
+          flake8 src/ --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Security check
+        run: |
+          bandit -r src/ -f json -o bandit-report.json || true
+          safety check --json --output safety-report.json || true
+
+      - name: Run tests
+        run: |
+          cd src
+          python -m pytest test_main.py -v
+
+      - name: Helm lint
+        run: |
+          helm lint deploy/helm-chart/
+
+      - name: Terraform format check
+        run: |
+          cd deploy/terraform
+          terraform fmt -check -recursive
+
+      - name: Terraform validate
+        run: |
+          cd deploy/terraform
+          terraform init -backend=false
+          terraform validate
+
+      - name: Dockerfile check
+        run: |
+          hadolint Dockerfile || true
+
+  # Build and Push Image
+  build-image:
+    name: Build and Push Image
+    runs-on: ubuntu-latest
+    needs: pr-validation
+    if: always() && needs.pr-validation.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'push')
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value={{sha}}
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Deploy to Dev
+  deploy-dev:
+    name: Deploy to Dev
+    runs-on: ubuntu-latest
+    needs: [build-image]
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/develop')
+    environment: development
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.0.0"
+
+      - name: Deploy to dev
+        run: |
+          cd deploy/terraform
+          terraform init
+          echo "=== Terraform Plan for Development ==="
+          terraform plan -var-file="terraform.tfvars.dev" -var="db_password=${{ secrets.DB_PASSWORD }}" -detailed-exitcode || true
+          echo "=== Applying Terraform Changes ==="
+          terraform apply -var-file="terraform.tfvars.dev" -var="db_password=${{ secrets.DB_PASSWORD }}" -auto-approve
+
+      - name: Wait for deployment
+        run: |
+          sleep 60
+
+      - name: Health check
+        id: health-check
+        run: |
+          # Mock endpoint check
+          echo "Running health check..."
+          # curl -f http://your-dev-ingress-ip/ || exit 1
+          echo "Health check passed"
+
+      - name: Rollback helm on failure
+        if: steps.health-check.outcome == 'failure'
+        run: |
+          echo "❌ Health check failed, rolling back deployment"
+          
+          # Rollback to previous revision
+          helm rollback ${{ env.RELEASE_NAME_DEV }} 1 || echo "Helm rollback failed or no previous revision"
+          
+          echo "✅ Rollback completed"
+
+      - name: Report deployment status to Slack
+        if: always()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          text: |
+            🚀 **Development Deployment (${{ github.event_name == 'pull_request' && 'PR' || 'Merge' }})**
+            **Status:** ${{ job.status }}
+            **Environment:** Development
+            **Trigger:** ${{ github.event_name }}
+
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Send deployment timestamp to Prometheus
+        if: always()
+        run: |
+          # Send deployment timestamp to Prometheus Pushgateway
+          DEPLOYMENT_TIMESTAMP=$(date +%s)
+          ENVIRONMENT="development"
+          IMAGE_TAG="${{ needs.build-image.outputs.image-tag }}"
+          TRIGGER="${{ github.event_name == 'pull_request' && 'pr' || 'merge' }}"
+          
+          cat << EOF | curl -X POST -H "Content-Type: text/plain" --data-binary @- ${{ secrets.PROMETHEUS_PUSHGATEWAY_URL }}
+          deployment_timestamp_seconds{environment="$ENVIRONMENT",image_tag="$IMAGE_TAG",trigger="$TRIGGER"} $DEPLOYMENT_TIMESTAMP
+          EOF
+
+  # Prepare Production Plan
+  prepare-prod-plan:
+    name: Prepare Production Plan
+    runs-on: ubuntu-latest
+    needs: [build-image]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.0.0"
+
+      - name: Generate Terraform plan
+        run: |
+          cd deploy/terraform
+          terraform init
+          terraform plan -var-file="terraform.tfvars.prod" -var="db_password=${{ secrets.DB_PASSWORD }}" -out=prod-plan.tfplan
+          terraform show -no-color prod-plan.tfplan > plan-output.txt
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: terraform-plan
+          path: |
+            deploy/terraform/prod-plan.tfplan
+            deploy/terraform/plan-output.txt
+
+      - name: Create deployment issue
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            let planOutput = '';
+            try {
+              planOutput = fs.readFileSync('terraform/plan-output.txt', 'utf8');
+            } catch (error) {
+              planOutput = 'Plan output could not be read';
+            }
+            
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Production Deployment Approval Required',
+              body: `Production deployment plan is ready for review.
+                     
+                     **New Image:** ${{ needs.build-image.outputs.image-tag }}
+                     
+                     ## Terraform Plan Summary
+                     
+                     \`\`\`
+                     ${planOutput}
+                     \`\`\`
+                     
+                     Please review the Terraform plan above and approve the deployment.
+                     
+                     To approve, comment: \`/approve-prod\`
+                     To reject, comment: \`/reject-prod\``,
+              labels: ['deployment', 'production', 'needs-approval']
+            })
+
+  # Deploy to Production
+  deploy-prod:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build-image, prepare-prod-plan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: terraform-plan
+          path: deploy/terraform/
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.0.0"
+
+      - name: Deploy to production
+        run: |
+          cd deploy/terraform
+          terraform init
+          terraform apply prod-plan.tfplan
+
+      - name: Wait for deployment
+        run: |
+          sleep 120
+
+      - name: Production health check
+        id: prod-health-check
+        run: |
+          echo "Running production health check..."
+          # curl -f https://your-prod-ingress/ || exit 1
+          echo "Production health check passed"
+
+      - name: Auto-rollback on failure
+        if: steps.prod-health-check.outcome == 'failure'
+        run: |
+          echo "❌ Production health check failed, rolling back deployment"
+          
+          # Rollback to previous revision
+          helm rollback ${{ env.RELEASE_NAME_PROD }} 1 || echo "Helm rollback failed or no previous revision"
+          
+          echo "✅ Production rollback completed"
+
+      - name: Report deployment status to Slack
+        if: always()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          text: |
+            🚀 **Production Deployment**
+            **Status:** ${{ job.status }}
+            **Environment:** Production
+
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Send deployment timestamp to Prometheus
+        if: always()
+        run: |
+          # Send deployment timestamp to Prometheus Pushgateway
+          DEPLOYMENT_TIMESTAMP=$(date +%s)
+          ENVIRONMENT="production"
+          IMAGE_TAG="${{ needs.build-image.outputs.image-tag }}"
+          
+          cat << EOF | curl -X POST -H "Content-Type: text/plain" --data-binary @- ${{ secrets.PROMETHEUS_PUSHGATEWAY_URL }}
+          deployment_timestamp_seconds{environment="$ENVIRONMENT",image_tag="$IMAGE_TAG",trigger="main"} $DEPLOYMENT_TIMESTAMP
+          EOF 

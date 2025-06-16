@@ -1,0 +1,82 @@
+name: Production Deployment Approval Handler
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  handle-approval:
+    name: Handle Production Approval
+    runs-on: ubuntu-latest
+    if: contains(github.event.issue.labels.*.name, 'needs-approval') && contains(github.event.issue.labels.*.name, 'production')
+    steps:
+      - name: Check for approval command
+        id: check-approval
+        run: |
+          if [[ "${{ github.event.comment.body }}" == "/approve-prod" ]]; then
+            echo "approved=true" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event.comment.body }}" == "/reject-prod" ]]; then
+            echo "approved=false" >> $GITHUB_OUTPUT
+          else
+            echo "approved=unknown" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Approve deployment
+        if: steps.check-approval.outputs.approved == 'true'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            // Close the approval issue
+            github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              state: 'closed',
+              labels: ['deployment', 'production', 'approved']
+            })
+            
+            // Add approval comment
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `✅ **Production deployment approved by @${{ github.actor }}**
+                     
+                     The deployment will proceed automatically.`
+            })
+            
+            // Trigger the production deployment
+            github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'ci-cd-pipeline.yml',
+              ref: 'main',
+              inputs: {
+                'approval': 'true',
+                'issue_number': '${{ github.event.issue.number }}'
+              }
+            })
+
+      - name: Reject deployment
+        if: steps.check-approval.outputs.approved == 'false'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            // Close the approval issue
+            github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              state: 'closed',
+              labels: ['deployment', 'production', 'rejected']
+            })
+            
+            // Add rejection comment
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `❌ **Production deployment rejected by @${{ github.actor }}**
+                     
+                     The deployment has been cancelled.`
+            }) 
