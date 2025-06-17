@@ -129,15 +129,15 @@ The CI/CD pipeline includes automated verification:
 
 ## Tradeoffs
 
-I had very limited time and in production environment I would add at least these features:
+I had very limited time so this project is a concept of CI/CD workflow, most functions are mocked. In production environment I would add at least these features:
 
-### Infrastructure Improvements
+### Infrastructure
 - OIDC GitHub Cloud Provider Authentication
 - Secret management with rotation
 - Terraform S3 State + State Lock in DynamoDB
 - Observability platform
 
-### Kubernetes Enhancements
+### Kubernetes
 - TLS for Ingress
 - Resources Specified (CPU/Memory limits)
 - Horizontal Pod Autoscaler (HPA)
